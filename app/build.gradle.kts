@@ -1,7 +1,18 @@
+import java.util.Properties
+
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.compose)
     alias(libs.plugins.kotlin.serialization)
+}
+
+// Release signing lives outside the repository: Gradle reads
+// ~/.config/z50-bridge-android/signing.properties when present, so a fresh
+// clone builds an unsigned APK until you point Z50_BRIDGE_SIGNING at your own
+// key. See the README ("Releases").
+val signingProps = Properties().apply {
+    val f = file(System.getenv("Z50_BRIDGE_SIGNING") ?: "${System.getProperty("user.home")}/.config/z50-bridge-android/signing.properties")
+    if (f.exists()) f.inputStream().use { load(it) }
 }
 
 android {
@@ -17,6 +28,17 @@ android {
         versionName = "0.5.3"
     }
 
+    signingConfigs {
+        if (signingProps.getProperty("storeFile") != null) {
+            create("release") {
+                storeFile = file(signingProps.getProperty("storeFile"))
+                storePassword = signingProps.getProperty("storePassword")
+                keyAlias = signingProps.getProperty("keyAlias")
+                keyPassword = signingProps.getProperty("keyPassword")
+            }
+        }
+    }
+
     buildTypes {
         release {
             isMinifyEnabled = true
@@ -25,6 +47,7 @@ android {
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro",
             )
+            signingConfig = signingConfigs.findByName("release")
         }
     }
 

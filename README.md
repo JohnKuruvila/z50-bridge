@@ -244,13 +244,41 @@ Needs JDK 17+ and Android SDK 37 (AGP 9.4 downloads the platform automatically).
 ```bash
 echo "sdk.dir=$HOME/Android/Sdk" > local.properties
 ./gradlew :app:assembleDebug      # debug APK
-./gradlew :app:assembleRelease    # R8-shrunk release (~3 MB, unsigned)
+./gradlew :app:assembleRelease    # R8-shrunk release APK
 ./gradlew :app:testDebugUnitTest :app:lintDebug
 ```
 
 APK: `app/build/outputs/apk/debug/app-debug.apk`
 
 Install: `adb install -r app/build/outputs/apk/debug/app-debug.apk`
+
+## Releases
+
+Prebuilt APKs are attached to the [releases](https://github.com/JohnKuruvila/z50-bridge/releases).
+They are signed with a long-lived key that is **not** in this repository, so
+`assembleRelease` on a fresh clone produces an unsigned APK. To sign your own
+build, create a keystore and point Gradle at it:
+
+```bash
+mkdir -p ~/.config/z50-bridge-android
+keytool -genkeypair -keystore ~/.config/z50-bridge-android/release.jks \
+  -storetype PKCS12 -alias z50-bridge -keyalg EC -groupname secp256r1 \
+  -validity 10500 -dname "CN=Z50 Bridge"
+```
+
+Then write `~/.config/z50-bridge-android/signing.properties` (mode 0600):
+
+```properties
+storeFile=/home/you/.config/z50-bridge-android/release.jks
+storePassword=…
+keyAlias=z50-bridge
+keyPassword=…
+```
+
+Gradle picks it up automatically; set `Z50_BRIDGE_SIGNING` to use a different
+path. Note that Android treats the signing key as the app's identity: a build
+signed with a different key cannot upgrade an installed copy, it has to be
+uninstalled first.
 
 Toolchain notes: Gradle 9.7.1, AGP 9.4.1, Kotlin 2.4.20 (the Compose and
 serialization plugins pull the matching KGP, so the old stdlib pin is gone),
