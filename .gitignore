@@ -1,0 +1,18 @@
+# Android / Gradle
+.gradle/
+build/
+app/build/
+local.properties
+.idea/
+*.apk
+*.aab
+*.iml
+.kotlin/
+.cxx/
+captures/
+
+# Local output
+*.log
+
+# OS
+.DS_Store

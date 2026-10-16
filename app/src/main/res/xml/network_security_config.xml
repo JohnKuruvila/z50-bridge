@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  The Z50 and the ingest receiver are HTTP-only devices on a private network, so
+  cleartext has to be permitted for whichever address you use. Android's network
+  security config accepts IP literals but not CIDR ranges, and the app cannot
+  know your camera's or your server's address at build time, so cleartext is
+  permitted in base-config rather than through a per-host allowlist.
+
+  The app only ever talks to the camera's own AP defaults and to the address you
+  configure in the setup wizard; it has no internet-facing traffic, and offload
+  never uses mobile data. If you would rather keep a strict allowlist, replace
+  base-config with:
+
+      <base-config cleartextTrafficPermitted="false" />
+
+  and add your camera and ingest host as <domain> entries below.
+-->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="true" />
+    <domain-config cleartextTrafficPermitted="true">
+        <!-- Camera AP defaults, kept explicit so the intent is obvious. -->
+        <domain includeSubdomains="false">193.168.0.1</domain>
+        <domain includeSubdomains="false">192.168.0.1</domain>
+        <!-- Loopback tunnels for adb reverse / local testing -->
+        <domain includeSubdomains="false">127.0.0.1</domain>
+        <domain includeSubdomains="false">localhost</domain>
+    </domain-config>
+</network-security-config>

@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="app_background">#FFF9F9FC</color>
+    <color name="splash_background">#FFF9F9FC</color>
+    <color name="progress_sync">#FF8B5000</color>
+    <color name="progress_offload">#FF006874</color>
+    <color name="splash_icon_background">#FF161B21</color>
+</resources>

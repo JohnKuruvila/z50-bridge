@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<shortcuts xmlns:android="http://schemas.android.com/apk/res/android">
+    <shortcut
+        android:enabled="true"
+        android:icon="@mipmap/ic_shortcut_sync"
+        android:shortcutId="sync"
+        android:shortcutShortLabel="@string/shortcut_sync_short">
+        <intent
+            android:action="io.github.johnkuruvila.z50bridge.SYNC"
+            android:targetClass="io.github.johnkuruvila.z50bridge.MainActivity"
+            android:targetPackage="io.github.johnkuruvila.z50bridge" />
+    </shortcut>
+    <shortcut
+        android:enabled="true"
+        android:icon="@mipmap/ic_shortcut_offload"
+        android:shortcutId="offload"
+        android:shortcutShortLabel="@string/shortcut_offload_short">
+        <intent
+            android:action="io.github.johnkuruvila.z50bridge.OFFLOAD"
+            android:targetClass="io.github.johnkuruvila.z50bridge.MainActivity"
+            android:targetPackage="io.github.johnkuruvila.z50bridge" />
+    </shortcut>
+</shortcuts>

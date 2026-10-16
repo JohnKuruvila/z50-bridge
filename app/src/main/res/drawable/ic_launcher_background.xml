@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Deep ink with a soft top light, matching the app's dark surfaces. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:aapt="http://schemas.android.com/aapt"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <path android:pathData="M0,0h108v108h-108z">
+        <aapt:attr name="android:fillColor">
+            <gradient
+                android:centerX="54"
+                android:centerY="26"
+                android:gradientRadius="104"
+                android:type="radial">
+                <item android:color="#FF27303A" android:offset="0" />
+                <item android:color="#FF0B0E12" android:offset="1" />
+            </gradient>
+        </aapt:attr>
+    </path>
+</vector>

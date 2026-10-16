@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Splash: the launcher mark, scaled to fill the 160dp splash-icon circle. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <group
+        android:pivotX="54"
+        android:pivotY="54"
+        android:scaleX="1.25"
+        android:scaleY="1.25">
+        <path
+        android:pathData="M44.45,73.93 A21.5,21.5 0 0 1 60.55,34.07"
+        android:strokeWidth="8"
+        android:strokeColor="#FFFFB866"
+        android:strokeLineCap="round" />
+    <path
+        android:pathData="M68.48,39.61 A21.5,21.5 0 0 1 72.14,62.74"
+        android:strokeWidth="8"
+        android:strokeColor="#FF7BD6E8"
+        android:strokeLineCap="round" />
+    <path
+        android:fillColor="#FF7BD6E8"
+        android:pathData="M68.28,71.42 L80.26,64.17 L65.65,57.66 Z"
+        android:strokeWidth="2.5"
+        android:strokeColor="#FF7BD6E8"
+        android:strokeLineJoin="round" />
+    <path
+        android:fillColor="#FFF3EEE6"
+        android:pathData="M52.5,43.5 a10.5,10.5 0 1 0 0,21 a10.5,10.5 0 1 0 0,-21 z" />
+    <path
+        android:fillColor="#FF0B0E12"
+        android:pathData="M52.5,47.8 a6.2,6.2 0 1 0 0,12.4 a6.2,6.2 0 1 0 0,-12.4 z" />
+    <path
+        android:pathData="M49.12,52.77 A3.6,3.6 0 0 1 51.87,50.45"
+        android:strokeWidth="1.6"
+        android:strokeColor="#FFF3EEE6"
+        android:strokeLineCap="round" />
+    </group>
+</vector>
