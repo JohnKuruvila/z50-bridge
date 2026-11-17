@@ -100,4 +100,6 @@ data class BridgeUiState(
     val autoOffloadPaused: Boolean = false,
     /** Stop was pressed and the transfer is unwinding (blocking requests can take a few seconds). */
     val stopping: Boolean = false,
+    /** Pause was pressed: the running transfer is held until Resume or Stop. */
+    val paused: Boolean = false,
 )

@@ -35,6 +35,8 @@ data class BridgeSettings(
     val parallelDownloads: Int = 1,
     val offloadWifiAllowlist: Set<String> = emptySet(),
     val themeMode: ThemeMode = ThemeMode.Brand,
+    /** Sustained problem alerts while Android Auto is connected; progress is on the car screen. */
+    val carAlerts: Boolean = true,
 ) {
     fun needsSetup(): Boolean = destHost.trim().isEmpty() || destPort <= 0
 }
@@ -71,6 +73,7 @@ class SettingsRepository(
                 .sorted()
                 .joinToString("\n")
             prefs[Keys.themeMode] = next.themeMode.name
+            prefs[Keys.carAlerts] = next.carAlerts
         }
     }
 
@@ -100,6 +103,7 @@ class SettingsRepository(
             themeMode = this[Keys.themeMode]?.let { name ->
                 ThemeMode.entries.firstOrNull { it.name == name }
             } ?: ThemeMode.Brand,
+            carAlerts = this[Keys.carAlerts] ?: true,
         )
     }
 
@@ -123,5 +127,6 @@ class SettingsRepository(
         val parallelDownloads = intPreferencesKey("parallelDownloads")
         val offloadWifiAllowlist = stringPreferencesKey("offloadWifiAllowlist")
         val themeMode = stringPreferencesKey("themeMode")
+        val carAlerts = booleanPreferencesKey("carAlerts")
     }
 }

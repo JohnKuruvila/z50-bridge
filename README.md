@@ -114,7 +114,7 @@ body text stays on the system font.
   Homelab as three nodes whose links show state (dotted = unreachable, solid =
   ready, animated dashes = transferring). While a transfer runs, the card
   shows speed, time left, a wavy progress bar, a throughput sparkline, and
-  per-stream progress; **Stop transfer** replaces Sync/Offload. Below that:
+  per-stream progress; **Pause** (or **Resume**) and **Stop** replace Sync/Offload. Below that:
   a **camera card** while the camera is connected (recording state, SD card
   free space, GPS fix, clock offset, a warning when the camera chip reads 100
   or more, with **Live view** and camera **Settings** buttons), latest clip
@@ -160,7 +160,7 @@ body text stays on the system font.
 - **Setup** is a four-step onboarding: welcome, homelab receiver (with a
   connection test), optional camera Wi-Fi auto-join, done.
 - Reduced motion disables the pipeline and status animations.
-- **Notifications** carry only the actions that apply: **Stop** while a
+- **Notifications** carry only the actions that apply: **Pause** or **Resume** and **Stop** while a
   transfer runs; **Sync**, **Offload** (when clips are staged), and **Stop
   watching** otherwise. Transfers use the amber/cyan signal color, show
   "774 MB of 2.00 GB · 9.0 MB/s" with the time left as the status chip, and
@@ -168,7 +168,45 @@ body text stays on the system font.
   sync offers **Offload** when the homelab is reachable.
 - **Widget** (Glance, brand palette): status dot and line, the staged clip
   count as a large number with the size on phone, and Sync / Offload pills
-  (Stop during a transfer). Narrow sizes drop the labels to icon pills.
+  (Pause or Resume and Stop during a transfer). Narrow sizes drop the labels to icon pills.
+
+### Android Auto status and alerts (v0.6.5)
+
+Open **Z50 Bridge** from the car launcher for live status. Two fixed rows put
+transfer state and data freshness first, followed by files saved this drive,
+active downloads, waiting files and completed files awaiting upload. Counts
+include GPS/sensor sidecars, so they are labelled files rather than clips.
+The drive count starts when Android Auto connects and survives leaving and
+reopening the car screen during that connection.
+
+The screen refreshes changed secondary text every two seconds while visible.
+It distinguishes downloading, uploading, waiting for data, stalled, reconnecting,
+paused and stopped. After ten seconds without bytes it hides the old speed;
+after sixty seconds it shows a stall. Uploads use their own activity clock and
+count a file as uploaded only after the receiver acknowledges it. Resume starts
+a fresh waiting interval without pretending bytes have arrived. A growing
+recording queue is shown as file counts rather than a misleading overall ETA.
+
+**Android Auto alerts** in Settings → Automation controls sustained problem
+messages only. Routine start, progress, pause, completion and recovery do not
+send messages: some car hosts surface even silent message updates as new
+pop-ups. Recovery removes the previous problem message. A no-data stall takes
+sixty seconds, camera silence/repeated failures must persist for thirty seconds,
+and a disconnected camera has a five-minute grace period. Problem pop-ups are
+at least five minutes apart across problem types, with one per continuous
+problem. Mark as read or Reply dismisses the current message. Alerts are removed
+when Android Auto disconnects or the alerts setting is disabled. The native
+status screen works independently of the alerts switch.
+
+The screen is read-only and shares the phone controller. Opening it does not
+start watching, initiate transfers or require Shizuku. See the
+[setup checklist](docs/android-auto-setup.md) for sideloading limits and the
+acceptance test.
+
+The status formatter and alert policy share the same state classification.
+Byte clocks, drive counts and queue deltas are held in memory, so the car
+screen adds no periodic storage writes. Queue counts update on completed downloads and
+verified removals, without an extra per-file storage scan.
 
 ### Screenshots without a device
 
@@ -202,6 +240,16 @@ Thumbnails do not load in that JVM renderer, so tiles show their placeholder.
   watcher leaves that kind of transfer alone until its connection ends: a
   stopped sync stays stopped until the camera next connects, a stopped offload
   until the phone leaves that network. Tapping Sync or Offload lifts the pause.
+  An upload in progress when Stop is pressed starts over next time; a download
+  resumes from its `.part` file.
+- **Pause** (in the app, notification or widget) holds the running transfer
+  until **Resume** or **Stop**, however long that takes, and the watcher starts
+  nothing meanwhile. An upload keeps its connection and carries on from the same
+  byte; a download keeps its `.part` file and the camera leaves SuperDownload
+  mode. If a connection did not survive the pause, that file retries when
+  resumed, without counting as a failure; if the whole network has gone, Resume
+  ends the transfer and the rest stay queued. A pause does not survive the app
+  being killed: the watcher decides afresh on the next start.
 - "Last synced/offloaded" is saved to disk and updated after every file, so it
   survives a restart and counts transfers cut short by the ignition. If the app
   process dies during a transfer, the next start says so in Activity.

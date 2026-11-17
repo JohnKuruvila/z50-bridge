@@ -24,8 +24,8 @@ android {
         applicationId = "io.github.johnkuruvila.z50bridge"
         minSdk = 26
         targetSdk = 36
-        versionCode = 18
-        versionName = "0.5.3"
+        versionCode = 24
+        versionName = "0.6.5"
     }
 
     signingConfigs {
@@ -105,6 +105,8 @@ dependencies {
     implementation(libs.coil.compose)
     implementation(libs.glance.appwidget)
     implementation(libs.glance.material3)
+    implementation(libs.androidx.car.app)
+    implementation(libs.androidx.car.app.projected)
 
     implementation(libs.okhttp)
 

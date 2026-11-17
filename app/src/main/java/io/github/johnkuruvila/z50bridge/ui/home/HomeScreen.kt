@@ -56,6 +56,8 @@ import androidx.compose.material.icons.outlined.Info
 import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material.icons.outlined.SdStorage
+import androidx.compose.material.icons.outlined.PauseCircle
+import androidx.compose.material.icons.outlined.PlayCircle
 import androidx.compose.material.icons.outlined.StopCircle
 import androidx.compose.material.icons.outlined.Videocam
 import androidx.compose.material3.Button
@@ -135,6 +137,8 @@ fun HomeScreen(
     onSync: () -> Unit,
     onOffload: () -> Unit,
     onStop: () -> Unit,
+    onPause: () -> Unit,
+    onResume: () -> Unit,
     onRefresh: () -> Unit,
     onOpenSetup: () -> Unit,
     onOpenSettings: () -> Unit,
@@ -251,6 +255,8 @@ fun HomeScreen(
                         onSync = onSync,
                         onOffload = onOffload,
                         onStop = onStop,
+                        onPause = onPause,
+                        onResume = onResume,
                     )
                 }
                 when {
@@ -400,6 +406,7 @@ private fun PipelineCard(
                         progress = progress,
                         throughput = throughput,
                         color = if (progress.isOffload) MaterialTheme.signals.offload else MaterialTheme.signals.sync,
+                        paused = state.paused,
                     )
                 }
             }
@@ -432,7 +439,7 @@ private fun PipelineCard(
 
 @OptIn(ExperimentalMaterial3ExpressiveApi::class)
 @Composable
-private fun TransferPanel(progress: TransferProgress, throughput: List<Long>, color: Color) {
+private fun TransferPanel(progress: TransferProgress, throughput: List<Long>, color: Color, paused: Boolean) {
     val overallTotal = progress.overallTotal ?: progress.total
     val fraction = if (overallTotal != null && overallTotal > 0) {
         (progress.overallCopied.toFloat() / overallTotal.toFloat()).coerceIn(0f, 1f)
@@ -444,14 +451,23 @@ private fun TransferPanel(progress: TransferProgress, throughput: List<Long>, co
 
     Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
         Row(verticalAlignment = Alignment.Bottom) {
-            Text(speedValue, style = Numeric.hero, color = MaterialTheme.colorScheme.onSurface)
-            Spacer(Modifier.width(6.dp))
-            Text(
-                speedUnit,
-                style = MaterialTheme.typography.titleMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.padding(bottom = 7.dp),
-            )
+            if (paused) {
+                // The last speed reading would claim data is still moving.
+                Text(
+                    stringResource(R.string.home_status_paused),
+                    style = MaterialTheme.typography.headlineMedium,
+                    color = MaterialTheme.colorScheme.onSurface,
+                )
+            } else {
+                Text(speedValue, style = Numeric.hero, color = MaterialTheme.colorScheme.onSurface)
+                Spacer(Modifier.width(6.dp))
+                Text(
+                    speedUnit,
+                    style = MaterialTheme.typography.titleMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(bottom = 7.dp),
+                )
+            }
             Spacer(Modifier.weight(1f))
             Column(horizontalAlignment = Alignment.End, modifier = Modifier.padding(bottom = 4.dp)) {
                 Text(
@@ -459,7 +475,7 @@ private fun TransferPanel(progress: TransferProgress, throughput: List<Long>, co
                     style = MaterialTheme.typography.labelMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
-                Text(formatEta(progress.etaSeconds), style = Numeric.large)
+                Text(formatEta(progress.etaSeconds.takeUnless { paused }), style = Numeric.large)
             }
         }
 
@@ -552,6 +568,8 @@ private fun heroHeadline(state: BridgeUiState, offline: Boolean): String {
     val progress = state.progress
     return when {
         state.stopping -> stringResource(R.string.home_headline_stopping)
+        state.paused && state.phase == BridgePhase.Syncing -> stringResource(R.string.home_headline_sync_paused)
+        state.paused -> stringResource(R.string.home_headline_offload_paused)
         state.phase == BridgePhase.Syncing && progress != null && progress.totalFiles > 0 ->
             pluralStringResource(R.plurals.home_headline_syncing_n, progress.totalFiles, progress.totalFiles)
         state.phase == BridgePhase.Offloading && progress != null && progress.totalFiles > 0 ->
@@ -572,6 +590,8 @@ private fun heroHeadline(state: BridgeUiState, offline: Boolean): String {
 @Composable
 private fun heroDetail(state: BridgeUiState, offline: Boolean): String = when {
     state.stopping -> stringResource(R.string.home_detail_stopping)
+    state.paused && state.phase == BridgePhase.Syncing -> stringResource(R.string.home_detail_sync_paused)
+    state.paused -> stringResource(R.string.home_detail_offload_paused)
     state.phase == BridgePhase.Idle || state.phase == BridgePhase.Watching -> lastResult(state) ?: idleDetail(state, offline)
     else -> idleDetail(state, offline)
 }
@@ -644,6 +664,8 @@ private fun ActionRow(
     onSync: () -> Unit,
     onOffload: () -> Unit,
     onStop: () -> Unit,
+    onPause: () -> Unit,
+    onResume: () -> Unit,
 ) {
     val haptics = LocalHapticFeedback.current
     fun tap(action: () -> Unit): () -> Unit = {
@@ -656,23 +678,46 @@ private fun ActionRow(
         label = "actions",
     ) { busy ->
         if (busy) {
-            OutlinedButton(
-                onClick = tap(onStop),
-                enabled = !state.stopping,
-                shapes = ButtonDefaults.shapes(),
-                colors = ButtonDefaults.outlinedButtonColors(contentColor = MaterialTheme.colorScheme.error),
-                border = BorderStroke(1.5.dp, MaterialTheme.colorScheme.error.copy(alpha = 0.6f)),
-                contentPadding = ButtonDefaults.MediumContentPadding,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(64.dp),
-            ) {
-                Icon(Icons.Outlined.StopCircle, contentDescription = null, modifier = Modifier.size(22.dp))
-                Spacer(Modifier.width(10.dp))
-                Text(
-                    stringResource(if (state.stopping) R.string.home_action_stopping else R.string.home_action_stop),
-                    style = MaterialTheme.typography.titleMedium,
-                )
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                if (!state.stopping) {
+                    FilledTonalButton(
+                        onClick = tap(if (state.paused) onResume else onPause),
+                        shapes = ButtonDefaults.shapes(),
+                        contentPadding = ButtonDefaults.MediumContentPadding,
+                        modifier = Modifier
+                            .weight(1f)
+                            .height(64.dp),
+                    ) {
+                        Icon(
+                            if (state.paused) Icons.Outlined.PlayCircle else Icons.Outlined.PauseCircle,
+                            contentDescription = null,
+                            modifier = Modifier.size(22.dp),
+                        )
+                        Spacer(Modifier.width(10.dp))
+                        Text(
+                            stringResource(if (state.paused) R.string.home_action_resume else R.string.home_action_pause),
+                            style = MaterialTheme.typography.titleMedium,
+                        )
+                    }
+                }
+                OutlinedButton(
+                    onClick = tap(onStop),
+                    enabled = !state.stopping,
+                    shapes = ButtonDefaults.shapes(),
+                    colors = ButtonDefaults.outlinedButtonColors(contentColor = MaterialTheme.colorScheme.error),
+                    border = BorderStroke(1.5.dp, MaterialTheme.colorScheme.error.copy(alpha = 0.6f)),
+                    contentPadding = ButtonDefaults.MediumContentPadding,
+                    modifier = Modifier
+                        .weight(1f)
+                        .height(64.dp),
+                ) {
+                    Icon(Icons.Outlined.StopCircle, contentDescription = null, modifier = Modifier.size(22.dp))
+                    Spacer(Modifier.width(10.dp))
+                    Text(
+                        stringResource(if (state.stopping) R.string.home_action_stopping else R.string.common_stop),
+                        style = MaterialTheme.typography.titleMedium,
+                    )
+                }
             }
         } else {
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {

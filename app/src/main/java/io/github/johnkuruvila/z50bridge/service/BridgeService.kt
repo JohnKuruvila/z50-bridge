@@ -55,7 +55,7 @@ class BridgeService : LifecycleService() {
         val controller = (application as Z50App).controller
         lifecycleScope.launch {
             controller.state.collectLatest { state ->
-                val syncing = state.phase == BridgePhase.Syncing
+                val syncing = state.phase == BridgePhase.Syncing && !state.paused
                 if (syncing) {
                     if (wifiLock?.isHeld == false) wifiLock?.acquire()
                 } else {
@@ -82,16 +82,15 @@ class BridgeService : LifecycleService() {
             // Stop the running transfer only; watching carries on.
             ACTION_STOP_TRANSFER -> {
                 controller.stopTransfer()
-                val state = controller.state.value
-                val transferring = state.phase == BridgePhase.Syncing || state.phase == BridgePhase.Offloading
-                when {
-                    state.watching -> START_STICKY
-                    else -> {
-                        // A one-shot Sync or Offload stops the service itself once it unwinds.
-                        if (!transferring) stopSelf()
-                        START_NOT_STICKY
-                    }
-                }
+                afterTransferControl()
+            }
+            ACTION_PAUSE_TRANSFER -> {
+                controller.pauseTransfer()
+                afterTransferControl()
+            }
+            ACTION_RESUME_TRANSFER -> {
+                controller.resumeTransfer()
+                afterTransferControl()
             }
             ACTION_SYNC -> {
                 startForegroundMode(TYPE_CONNECTED_DEVICE, getString(R.string.service_title_sync), getString(R.string.service_connecting_camera))
@@ -123,6 +122,16 @@ class BridgeService : LifecycleService() {
         }
     }
 
+    /** These only reach a running transfer, so a stale tap must not leave an idle service behind. */
+    private fun afterTransferControl(): Int {
+        val state = controller().state.value
+        val transferring = state.phase == BridgePhase.Syncing || state.phase == BridgePhase.Offloading
+        if (state.watching) return START_STICKY
+        // A one-shot Sync or Offload stops the service itself once it unwinds.
+        if (!transferring) stopSelf()
+        return START_NOT_STICKY
+    }
+
     override fun onDestroy() {
         val controller = (application as Z50App).controller
         if (controller.state.value.watching) controller.stopWatching()
@@ -146,8 +155,8 @@ class BridgeService : LifecycleService() {
             nm.notify(NOTIF_DONE, completionNotification(state))
         }
         val notification = when {
-            transferring && state.progress != null && Build.VERSION.SDK_INT >= 36 -> progressNotification(state)
-            transferring && state.progress != null -> compatProgressNotification(state)
+            transferring && !state.paused && state.progress != null && Build.VERSION.SDK_INT >= 36 -> progressNotification(state)
+            transferring && !state.paused && state.progress != null -> compatProgressNotification(state)
             else -> {
                 val content = statusContent(state)
                 if (content == shownStatus) return
@@ -165,6 +174,7 @@ class BridgeService : LifecycleService() {
         val text: String,
         val cameraReachable: Boolean,
         val transferring: Boolean,
+        val paused: Boolean,
         val offloadAction: Boolean,
     )
 
@@ -174,6 +184,7 @@ class BridgeService : LifecycleService() {
         text = statusText(state),
         cameraReachable = state.cameraReachable,
         transferring = state.phase == BridgePhase.Syncing || state.phase == BridgePhase.Offloading,
+        paused = state.paused,
         offloadAction = state.phoneFiles > 0,
     )
 
@@ -204,6 +215,7 @@ class BridgeService : LifecycleService() {
             .setOnlyAlertOnce(true)
             .setContentIntent(openIntent())
             .setStyle(style)
+            .addAction(pauseAction())
             .addAction(stopAction())
             .build()
     }
@@ -222,6 +234,7 @@ class BridgeService : LifecycleService() {
             .setOngoing(true)
             .setOnlyAlertOnce(true)
             .setContentIntent(openIntent())
+            .addAction(0, getString(R.string.notif_pause_transfer), actionIntent(ACTION_PAUSE_TRANSFER))
             .addAction(0, getString(R.string.notif_stop_transfer), actionIntent(ACTION_STOP_TRANSFER))
             .build()
     }
@@ -296,6 +309,11 @@ class BridgeService : LifecycleService() {
             .setForegroundServiceBehavior(NotificationCompat.FOREGROUND_SERVICE_IMMEDIATE)
         val transferring = state.phase == BridgePhase.Syncing || state.phase == BridgePhase.Offloading
         if (transferring) {
+            if (state.paused) {
+                builder.addAction(0, getString(R.string.notif_resume_transfer), actionIntent(ACTION_RESUME_TRANSFER))
+            } else {
+                builder.addAction(0, getString(R.string.notif_pause_transfer), actionIntent(ACTION_PAUSE_TRANSFER))
+            }
             builder.addAction(0, getString(R.string.notif_stop_transfer), actionIntent(ACTION_STOP_TRANSFER))
         } else {
             builder.addAction(0, getString(R.string.common_sync), actionIntent(ACTION_SYNC))
@@ -309,6 +327,8 @@ class BridgeService : LifecycleService() {
 
     private fun statusTitle(state: BridgeUiState): String = getString(
         when {
+            state.paused && state.phase == BridgePhase.Syncing -> R.string.home_headline_sync_paused
+            state.paused -> R.string.home_headline_offload_paused
             state.phase == BridgePhase.Syncing -> R.string.service_syncing_title
             state.phase == BridgePhase.Offloading -> R.string.service_offloading_title
             state.cameraReachable -> R.string.notif_camera_connected
@@ -338,6 +358,13 @@ class BridgeService : LifecycleService() {
 
     private fun signalColor(offload: Boolean): Int =
         getColor(if (offload) R.color.progress_offload else R.color.progress_sync)
+
+    @RequiresApi(36)
+    private fun pauseAction(): Notification.Action = Notification.Action.Builder(
+        Icon.createWithResource(this, R.drawable.ic_widget_pause),
+        getString(R.string.notif_pause_transfer),
+        actionIntent(ACTION_PAUSE_TRANSFER),
+    ).build()
 
     @RequiresApi(36)
     private fun stopAction(): Notification.Action = Notification.Action.Builder(
@@ -381,6 +408,8 @@ class BridgeService : LifecycleService() {
         private const val MAX_SEGMENTS = 20
         const val ACTION_STOP = "io.github.johnkuruvila.z50bridge.STOP"
         const val ACTION_STOP_TRANSFER = "io.github.johnkuruvila.z50bridge.STOP_TRANSFER"
+        const val ACTION_PAUSE_TRANSFER = "io.github.johnkuruvila.z50bridge.PAUSE_TRANSFER"
+        const val ACTION_RESUME_TRANSFER = "io.github.johnkuruvila.z50bridge.RESUME_TRANSFER"
         const val ACTION_SYNC = "io.github.johnkuruvila.z50bridge.SYNC"
         const val ACTION_OFFLOAD = "io.github.johnkuruvila.z50bridge.OFFLOAD"
     }

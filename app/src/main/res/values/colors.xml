@@ -5,4 +5,10 @@
     <color name="progress_sync">#FF8B5000</color>
     <color name="progress_offload">#FF006874</color>
     <color name="splash_icon_background">#FF161B21</color>
+    <!-- Android Auto status avatars: amber camera → phone, red needs attention, green fixed. -->
+    <color name="car_sync">#FFFFB866</color>
+    <color name="car_problem">#FFFF6B6B</color>
+    <color name="car_recovered">#FF8FD8A4</color>
+    <color name="car_quiet">#FFB8BCC2</color>
+    <color name="car_glyph">#FF1B1B1B</color>
 </resources>

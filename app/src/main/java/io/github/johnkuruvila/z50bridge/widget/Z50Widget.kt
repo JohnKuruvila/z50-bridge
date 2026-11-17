@@ -85,10 +85,12 @@ class Z50Widget : GlanceAppWidget() {
         val phase = prefs[PHASE]?.let { name -> BridgePhase.entries.firstOrNull { it.name == name } } ?: BridgePhase.Idle
         val cameraOnline = prefs[CAMERA] ?: false
         val homelabOnline = prefs[HOMELAB] ?: false
+        val paused = prefs[PAUSED] ?: false
         val compact = LocalSize.current.width < MEDIUM.width
         val transferring = phase == BridgePhase.Syncing || phase == BridgePhase.Offloading
 
         val (statusText, statusColor) = when {
+            transferring && paused -> context.getString(R.string.home_status_paused) to IDLE
             phase == BridgePhase.Syncing -> context.getString(R.string.widget_status_syncing) to SYNC
             phase == BridgePhase.Offloading -> context.getString(R.string.widget_status_offloading) to OFFLOAD
             cameraOnline -> context.getString(R.string.widget_status_camera) to ONLINE
@@ -143,6 +145,20 @@ class Z50Widget : GlanceAppWidget() {
             Spacer(GlanceModifier.height(12.dp))
             Row(modifier = GlanceModifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                 if (transferring) {
+                    Pill(
+                        icon = if (paused) R.drawable.ic_widget_resume else R.drawable.ic_widget_pause,
+                        label = context.getString(
+                            if (paused) R.string.notif_resume_transfer else R.string.notif_pause_transfer,
+                        ).takeUnless { compact },
+                        container = GlanceTheme.colors.secondaryContainer,
+                        content = GlanceTheme.colors.onSecondaryContainer,
+                        action = serviceAction(
+                            context,
+                            if (paused) BridgeService.ACTION_RESUME_TRANSFER else BridgeService.ACTION_PAUSE_TRANSFER,
+                        ),
+                        modifier = GlanceModifier.defaultWeight(),
+                    )
+                    Spacer(GlanceModifier.width(8.dp))
                     Pill(
                         icon = R.drawable.ic_widget_stop,
                         label = context.getString(R.string.common_stop).takeUnless { compact },
@@ -205,12 +221,12 @@ class Z50Widget : GlanceAppWidget() {
         }
     }
 
-    // Sync/Offload call startForeground(); Stop only reaches an already running
-    // service and must not be started as a foreground service.
+    // Sync/Offload call startForeground(); Stop, Pause and Resume only reach an
+    // already running service and must not be started as a foreground service.
     private fun serviceAction(context: Context, action: String): Action =
         actionStartService(
             Intent(context, BridgeService::class.java).setAction(action),
-            isForegroundService = action != BridgeService.ACTION_STOP_TRANSFER,
+            isForegroundService = action == BridgeService.ACTION_SYNC || action == BridgeService.ACTION_OFFLOAD,
         )
 
     companion object {
@@ -227,12 +243,14 @@ class Z50Widget : GlanceAppWidget() {
         private val PHASE = stringPreferencesKey("phase")
         private val CAMERA = booleanPreferencesKey("camera")
         private val HOMELAB = booleanPreferencesKey("homelab")
+        private val PAUSED = booleanPreferencesKey("paused")
 
         suspend fun update(
             context: Context,
             files: Int,
             bytes: Long,
             phase: BridgePhase,
+            paused: Boolean,
             cameraOnline: Boolean,
             homelabOnline: Boolean,
         ) {
@@ -242,6 +260,7 @@ class Z50Widget : GlanceAppWidget() {
                     prefs[FILES] = files
                     prefs[BYTES] = bytes
                     prefs[PHASE] = phase.name
+                    prefs[PAUSED] = paused
                     prefs[CAMERA] = cameraOnline
                     prefs[HOMELAB] = homelabOnline
                 }

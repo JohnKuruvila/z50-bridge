@@ -168,6 +168,8 @@ fun Z50NavShell(
                         onSync = { startAction(context, BridgeService.ACTION_SYNC) },
                         onOffload = { startAction(context, BridgeService.ACTION_OFFLOAD) },
                         onStop = ::stopTransfer,
+                        onPause = controller::pauseTransfer,
+                        onResume = controller::resumeTransfer,
                         onRefresh = { controller.refreshStatus() },
                         onOpenSetup = { controller.setShowSetup(true) },
                         onOpenSettings = { push(SettingsKey()) },

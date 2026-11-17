@@ -53,11 +53,16 @@ class SyncEngine(
         /** Read while the sync runs, so a Settings change applies to it. */
         streams: () -> Int = { settings.parallelDownloads },
         onFileDone: () -> Unit = {},
+        /** A complete file entered staging; lets live status update without rescanning disk. */
+        onFileSaved: (Long) -> Unit = {},
         /** Runs once there is something to download, before the first transfer starts. */
         onQueued: () -> Unit = {},
         /** "Nothing new" for a poll that found nothing; defaults to [onLog]. */
         onIdle: (String) -> Unit = onLog,
         relistMs: Long = RELIST_MS,
+        gate: TransferGate = TransferGate(),
+        /** The file requests have ended; only the camera clean-up below is left. */
+        onWorkersDone: () -> Unit = {},
     ): Int = coroutineScope {
         val listStartMs = System.currentTimeMillis()
         destDir.mkdirs()
@@ -164,14 +169,20 @@ class SyncEngine(
             // No Activity line per file: a long drive syncs a clip a minute,
             // and the transfer report already lists every file.
             val dest = File(destDir, item.filename)
+            val alreadyStaged = dest.isFile
             activeByFile[item.name] = ActiveFileTransfer(item.filename, displayIndex, 0L, item.sizeBytes)
             publish()
             val timing = DownloadTiming().also { recorder?.track(it) }
             val streamsAtStart = activeByFile.size
+            val context = currentCoroutineContext()
+            val active = { context.isActive }
             try {
-                client.download(item.name, dest, expectedBytes = item.sizeBytes, timing = timing) { copied, _ ->
-                    activeByFile[item.name] = ActiveFileTransfer(item.filename, displayIndex, copied, item.sizeBytes)
-                    publish()
+                retryAfterPause(gate, active) {
+                    client.download(item.name, dest, expectedBytes = item.sizeBytes, timing = timing) { copied, _ ->
+                        activeByFile[item.name] = ActiveFileTransfer(item.filename, displayIndex, copied, item.sizeBytes)
+                        publish()
+                        gate.awaitOpen(active)
+                    }
                 }
                 val size = dest.length().takeIf { it > 0 } ?: (item.sizeBytes ?: 0L)
                 synchronized(stateLock) {
@@ -184,6 +195,7 @@ class SyncEngine(
                     downloadThumb(client, destDir, item.filename)
                 }
                 completed.incrementAndGet()
+                if (!alreadyStaged) onFileSaved(size)
                 onFileDone()
                 consecutiveFailures.set(0)
                 publish(force = true)
@@ -232,10 +244,23 @@ class SyncEngine(
             val relister = launch(Dispatchers.IO) {
                 while (isActive && !abort.get()) {
                     delay(relistMs)
+                    if (gate.isPaused) continue
                     val fresh = runCatching { listVideos() to listSidecars() }.getOrNull() ?: continue
                     val (clips, gps) = enqueue(fresh.first, fresh.second)
                     // No Activity line: on a drive this fires every minute.
                     if (clips + gps > 0) publish(force = true)
+                }
+            }
+            // SuperDownload shuts the camera's Bluetooth remote, so a paused sync gives it back.
+            val superDownloadFollower = launch(Dispatchers.IO) {
+                var paused = false
+                while (isActive) {
+                    delay(SUPER_DOWNLOAD_POLL_MS)
+                    val now = gate.isPaused
+                    if (now != paused) {
+                        paused = now
+                        runCatching { client.setSuperDownload(!now) }
+                    }
                 }
             }
             try {
@@ -251,13 +276,14 @@ class SyncEngine(
                 ) { (item, displayIndex) -> download(item, displayIndex) }
             } finally {
                 relister.cancel()
+                superDownloadFollower.cancel()
             }
         } finally {
-            try {
-                client.setSuperDownload(false)
-                superDownloadMarker.delete()
-            } catch (_: Exception) {
-            }
+            onWorkersDone()
+            // Stop's last abort can catch the first request on its way out.
+            val restored = runCatching { client.setSuperDownload(false) }.isSuccess ||
+                runCatching { client.setSuperDownload(false) }.isSuccess
+            if (restored) superDownloadMarker.delete()
         }
         failures.forEach { onError("Failed $it") }
         if (failures.isNotEmpty() && !abort.get()) {
@@ -289,5 +315,6 @@ class SyncEngine(
         const val SUPER_DOWNLOAD_MARKER = ".super_download_active"
         const val MAX_CONSECUTIVE_FAILURES = 2
         const val RELIST_MS = 60_000L
+        const val SUPER_DOWNLOAD_POLL_MS = 1_000L
     }
 }

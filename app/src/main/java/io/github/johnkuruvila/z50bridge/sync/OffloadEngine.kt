@@ -12,7 +12,6 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.isActive
-import kotlinx.coroutines.withTimeoutOrNull
 import okhttp3.MediaType
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
@@ -56,6 +55,9 @@ class OffloadEngine {
         /** Read while the offload runs, so a Settings change applies to it. */
         streams: () -> Int = { settings.parallelUploads },
         onFileDone: () -> Unit = {},
+        /** A verified upload was actually removed from staging. */
+        onFileRemoved: (Long) -> Unit = {},
+        gate: TransferGate = TransferGate(),
     ): Int = coroutineScope {
         val swept = orphanThumbnails(staging).count { it.delete() }
         if (swept > 0) onLog("Removed $swept leftover thumbnail${if (swept == 1) "" else "s"} of offloaded clips")
@@ -107,38 +109,42 @@ class OffloadEngine {
         onLog("Uploading ${files.size} files over $workers parallel HTTP stream${if (workers == 1) "" else "s"}")
         suspend fun upload(file: File) {
             val fileTotal = file.length()
+            val context = currentCoroutineContext()
+            val active = { context.isActive }
             try {
                 sentByFile[file.name] = 0L
                 activeByFile[file.name] = ActiveFileTransfer(file.name, uploaded.get() + 1, 0L, fileTotal)
                 publish()
 
                 // The receiver verifies this and refuses a corrupted transfer (HTTP 422).
-                val checksum = sha256Hex(file)
-                val request = Request.Builder()
-                    .url("http://${settings.destHost}:${settings.destPort}/upload/${file.name}")
-                    .header("X-Content-SHA256", checksum)
-                    .put(
-                        CountingFileRequestBody(file) { bytesSent ->
-                            sentByFile[file.name] = bytesSent
-                            activeByFile[file.name] =
-                                ActiveFileTransfer(file.name, uploaded.get() + 1, bytesSent, fileTotal)
-                            publish()
-                        },
-                    )
-                    .authorize(settings)
-                    .build()
+                val checksum = sha256Hex(file) { gate.awaitOpen(active) }
+                retryAfterPause(gate, active) {
+                    val request = Request.Builder()
+                        .url("http://${settings.destHost}:${settings.destPort}/upload/${file.name}")
+                        .header("X-Content-SHA256", checksum)
+                        .put(
+                            CountingFileRequestBody(file, beforeChunk = { gate.awaitOpen(active) }) { bytesSent ->
+                                sentByFile[file.name] = bytesSent
+                                activeByFile[file.name] =
+                                    ActiveFileTransfer(file.name, uploaded.get() + 1, bytesSent, fileTotal)
+                                publish()
+                            },
+                        )
+                        .authorize(settings)
+                        .build()
 
-                httpClient.newCall(request).execute().use { resp ->
-                    val ackBody = resp.body?.string().orEmpty()
-                    if (!resp.isSuccessful) {
-                        throw IOException("HTTP ${resp.code}: $ackBody")
-                    }
-                    // The file is deleted below, so a 2xx is not enough: the
-                    // receiver has to confirm it stored these exact bytes.
-                    val ack = UploadAck.parse(ackBody)
-                        ?: throw IOException("Unrecognised reply from the ingest server; keeping the local copy")
-                    ack.refusal(fileTotal, checksum)?.let { reason ->
-                        throw IOException("$reason; keeping the local copy")
+                    httpClient.newCall(request).execute().use { resp ->
+                        val ackBody = resp.body?.string().orEmpty()
+                        if (!resp.isSuccessful) {
+                            throw IOException("HTTP ${resp.code}: $ackBody")
+                        }
+                        // The file is deleted below, so a 2xx is not enough: the
+                        // receiver has to confirm it stored these exact bytes.
+                        val ack = UploadAck.parse(ackBody)
+                            ?: throw IOException("Unrecognised reply from the ingest server; keeping the local copy")
+                        ack.refusal(fileTotal, checksum)?.let { reason ->
+                            throw IOException("$reason; keeping the local copy")
+                        }
                     }
                 }
 
@@ -151,6 +157,7 @@ class OffloadEngine {
                     onError(warning)
                     onIssue(warning)
                 } else {
+                    onFileRemoved(fileTotal)
                     // The thumbnail only serves the Clips screen; it goes with its clip.
                     thumbnailFor(file)?.let { File(staging, it).delete() }
                 }
@@ -167,7 +174,7 @@ class OffloadEngine {
         }
 
         fun target(): Int = offloadWorkers(Int.MAX_VALUE, streams())
-        val finished = withTimeoutOrNull(UPLOAD_TIMEOUT_MS) {
+        val finished = withRunningTimeoutOrNull(UPLOAD_TIMEOUT_MS, gate) {
             runWorkerPool(
                 target = ::target,
                 next = { files.getOrNull(nextIndex.getAndIncrement()) },
@@ -239,11 +246,12 @@ internal fun orphanThumbnails(staging: File): List<File> {
     }
 }
 
-internal fun sha256Hex(file: File): String {
+internal fun sha256Hex(file: File, beforeChunk: () -> Unit = {}): String {
     val digest = java.security.MessageDigest.getInstance("SHA-256")
     file.inputStream().use { input ->
         val buffer = ByteArray(256 * 1024)
         while (true) {
+            beforeChunk()
             val read = input.read(buffer)
             if (read < 0) break
             digest.update(buffer, 0, read)
@@ -263,6 +271,7 @@ private fun Request.Builder.authorize(settings: BridgeSettings): Request.Builder
 private class CountingFileRequestBody(
     private val file: File,
     private val contentType: MediaType = "application/octet-stream".toMediaType(),
+    private val beforeChunk: () -> Unit = {},
     private val onBytesWritten: (Long) -> Unit,
 ) : RequestBody() {
     override fun contentType(): MediaType = contentType
@@ -273,6 +282,7 @@ private class CountingFileRequestBody(
         var bytesWritten = 0L
         file.source().use { source ->
             while (true) {
+                beforeChunk()
                 val read = source.read(buffer, chunkSize)
                 if (read == -1L) break
                 sink.write(buffer, read)

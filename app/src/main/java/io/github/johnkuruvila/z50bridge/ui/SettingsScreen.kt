@@ -39,6 +39,7 @@ import androidx.compose.material.icons.outlined.CloudUpload
 import androidx.compose.material.icons.outlined.ContentCopy
 import androidx.compose.material.icons.outlined.DarkMode
 import androidx.compose.material.icons.outlined.DeleteForever
+import androidx.compose.material.icons.outlined.DirectionsCar
 import androidx.compose.material.icons.outlined.Dns
 import androidx.compose.material.icons.outlined.ErrorOutline
 import androidx.compose.material.icons.outlined.Extension
@@ -526,7 +527,9 @@ fun SettingsScreen(
                         title = stringResource(R.string.settings_parallel_uploads),
                         icon = Icons.Outlined.Speed,
                         value = settings.parallelUploads,
-                        options = 1..5,
+                        // Over Tailscale/WireGuard each CUBIC stream tops out near
+                        // 1 MB/s on lossy Wi-Fi, so the total needs more streams.
+                        options = 1..8,
                         onChange = { save(settings.copy(parallelUploads = it)) },
                     )
                     GroupItem(
@@ -686,6 +689,17 @@ fun SettingsScreen(
             }
 
             // ---------------------------------------------------------- integrations
+            if (section == SettingsSection.Integrations) item(key = "android-auto") {
+                ListGroup(title = stringResource(R.string.settings_section_android_auto)) {
+                    SwitchItem(
+                        title = stringResource(R.string.settings_car_alerts),
+                        supporting = stringResource(R.string.settings_car_alerts_sub),
+                        icon = Icons.Outlined.DirectionsCar,
+                        checked = settings.carAlerts,
+                        onCheckedChange = { save(settings.copy(carAlerts = it)) },
+                    )
+                }
+            }
             if (section == SettingsSection.Integrations) item(key = "integrations") {
                 ListGroup(title = stringResource(R.string.settings_section_integrations)) {
                     IntegrationItem("io.github.johnkuruvila.z50bridge.SYNC", stringResource(R.string.settings_intent_sync_desc), context, snackbar)

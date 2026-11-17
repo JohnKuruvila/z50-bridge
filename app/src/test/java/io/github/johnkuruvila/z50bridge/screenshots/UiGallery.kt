@@ -146,7 +146,7 @@ class UiGallery {
 
     @Composable
     private fun Home(state: BridgeUiState, needsSetup: Boolean = false) = HomeScreen(
-        state = state, needsSetup = needsSetup, onWatch = {}, onSync = {}, onOffload = {}, onStop = {},
+        state = state, needsSetup = needsSetup, onWatch = {}, onSync = {}, onOffload = {}, onStop = {}, onPause = {}, onResume = {},
         onRefresh = {}, onOpenSetup = {}, onOpenSettings = {}, onOpenClips = {}, onOpenClip = {}, onOpenActivity = {},
         onOpenLiveView = {}, onOpenDashcam = {}, onSetRecording = { CameraResult.Ok(true) },
     )
@@ -179,6 +179,27 @@ class UiGallery {
             ),
         )
     }
+
+    private fun offloading(paused: Boolean) = ready().copy(
+        phase = BridgePhase.Offloading, serverReachable = true, paused = paused,
+        progress = TransferProgress(
+            filename = "2 parallel streams", fileIndex = 3, totalFiles = 8, isOffload = true,
+            copied = 400_000_000, total = 2_150_000_000, overallCopied = 812_000_000,
+            overallTotal = 2_150_000_000, bytesPerSecond = 24_400_000, etaSeconds = 54,
+            activeFiles = listOf(
+                ActiveFileTransfer("20260922183204_0060.mp4", 3, 190_000_000, 268_000_000),
+                ActiveFileTransfer("20260922182204_0060.mp4", 4, 61_000_000, 268_000_000),
+            ),
+        ),
+    )
+
+    @Test fun home_offloading() = shot("home_offloading") { Home(offloading(paused = false)) }
+
+    @Test fun home_offload_paused() = shot("home_offload_paused") { Home(offloading(paused = true)) }
+
+    @Test fun home_offload_paused_light() = shot("home_offload_paused_light", ThemeMode.Light) { Home(offloading(paused = true)) }
+
+    @Test fun home_stopping() = shot("home_stopping") { Home(offloading(paused = false).copy(stopping = true, progress = null)) }
 
     @Test fun home_offline_empty() = shot("home_offline") {
         Home(BridgeUiState(phoneFreeBytes = 41_000_000_000), needsSetup = true)

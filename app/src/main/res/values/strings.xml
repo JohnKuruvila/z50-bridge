@@ -1,6 +1,15 @@
 <resources>
     <string name="app_name">Z50 Bridge</string>
     <string name="channel_bridge">Bridge status</string>
+    <string name="channel_car">Android Auto alerts</string>
+    <string name="channel_car_desc">Sustained dashcam connection and transfer problems while Android Auto is connected</string>
+    <string name="car_sender">Dashcam</string>
+    <string name="car_me">You</string>
+    <string name="car_reply">Reply</string>
+    <string name="car_mark_read">Mark as read</string>
+    <string name="settings_section_android_auto">Android Auto</string>
+    <string name="settings_car_alerts">Android Auto alerts</string>
+    <string name="settings_car_alerts_sub">Only sustained problems interrupt you, at most once every five minutes. Open Z50 Bridge in the car launcher for live status, speed, last data and file counts. Needs Unknown sources in Android Auto\'s developer settings.</string>
     <string name="shortcut_sync_short">Sync camera</string>
     <string name="shortcut_offload_short">Offload now</string>
     <string name="widget_description">Clips waiting on the phone, with one-tap sync and offload</string>
@@ -64,7 +73,14 @@
     <string name="home_location_body">Lets the app spot the camera in Wi-Fi scans while it is closed. It never reads your location.</string>
     <string name="home_location_action">Allow</string>
     <string name="home_headline_stopping">Stopping…</string>
-    <string name="home_detail_stopping">Finishing the request in flight. Partial files are kept and resume next time.</string>
+    <string name="home_headline_sync_paused">Sync paused</string>
+    <string name="home_headline_offload_paused">Offload paused</string>
+    <string name="home_detail_sync_paused">Nothing is downloading. Partial clips are kept, so Resume carries on where it left off.</string>
+    <string name="home_detail_offload_paused">Nothing is uploading. Resume carries on where it left off; Stop ends the offload and clips in progress start over next time.</string>
+    <string name="home_status_paused">Paused</string>
+    <string name="home_action_pause">Pause</string>
+    <string name="home_action_resume">Resume</string>
+    <string name="home_detail_stopping">Ending the transfers in progress. Partial downloads are kept and resume next time.</string>
     <string name="home_action_stopping">Stopping…</string>
     <string name="home_action_sync">Sync</string>
     <string name="home_watch_title">Watch in background</string>
@@ -313,6 +329,8 @@
     </plurals>
 
     <string name="notif_stop_transfer">Stop</string>
+    <string name="notif_pause_transfer">Pause</string>
+    <string name="notif_resume_transfer">Resume</string>
     <string name="notif_stop_watching">Stop watching</string>
     <string name="notif_camera_connected">Camera connected</string>
     <string name="notif_watching">Watching for the camera</string>
@@ -477,7 +495,7 @@
     <string name="settings_cat_storage_sum">%1$s staged · %2$s free</string>
     <string name="settings_cat_appearance">Appearance</string>
     <string name="settings_cat_integrations">Automation</string>
-    <string name="settings_cat_integrations_sum">Tasker and intent actions</string>
+    <string name="settings_cat_integrations_sum">Android Auto alerts, Tasker and intent actions</string>
     <string name="settings_cat_about">About</string>
     <string name="settings_cat_about_sum">Version %1$s · diagnostics</string>
     <string name="settings_section_camera_clock">Clock</string>

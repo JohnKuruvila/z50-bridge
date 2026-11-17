@@ -24,6 +24,7 @@ import io.github.johnkuruvila.z50bridge.camera.flag
 import io.github.johnkuruvila.z50bridge.camera.parseCameraClock
 import io.github.johnkuruvila.z50bridge.camera.parseCameraStatus
 import io.github.johnkuruvila.z50bridge.camera.parseDashcamSettings
+import io.github.johnkuruvila.z50bridge.car.SyncSignals
 import io.github.johnkuruvila.z50bridge.data.ActivityStore
 import io.github.johnkuruvila.z50bridge.data.BridgeSettings
 import io.github.johnkuruvila.z50bridge.data.DeviceInfo
@@ -62,6 +63,8 @@ import io.github.johnkuruvila.z50bridge.navigation.TopDestination
 import io.github.johnkuruvila.z50bridge.sync.OffloadEngine
 import io.github.johnkuruvila.z50bridge.sync.ProgressThrottle
 import io.github.johnkuruvila.z50bridge.sync.StagedClipScanner
+import io.github.johnkuruvila.z50bridge.sync.TransferGate
+import io.github.johnkuruvila.z50bridge.sync.abortUntilUnwound
 import io.github.johnkuruvila.z50bridge.sync.SyncEngine
 import io.github.johnkuruvila.z50bridge.ui.common.AppToasts
 import io.github.johnkuruvila.z50bridge.ui.common.formatBytes
@@ -135,6 +138,19 @@ class BridgeController(context: Context) {
     @Volatile
     private var stopRequested = false
 
+    /** Holds the running session's workers while paused; each session starts with an open one. */
+    private var transferGate = TransferGate()
+
+    /** The sync's file requests have ended, so Stop must not abort its camera clean-up. */
+    private val transferIoDone = java.util.concurrent.atomic.AtomicBoolean(false)
+
+    /** Released while paused, so a paused transfer does not keep the phone awake. */
+    private var transferWakeLock: PowerManager.WakeLock? = null
+
+    /** Last routes probe() found: what Stop pauses if the session has not picked its own yet. */
+    private var probedCameraNet: Network? = null
+    private var probedOffloadNet: Network? = null
+
     /** Latest saved settings, read by running transfers so a stream-count change applies live. */
     @Volatile
     private var liveSettings: BridgeSettings? = null
@@ -191,6 +207,30 @@ class BridgeController(context: Context) {
 
     @Volatile
     private var cameraSilentLogged = false
+
+    // What the car alerts read through [carSignals].
+    @Volatile
+    private var syncStartedAtMs: Long? = null
+
+    @Volatile
+    private var lastSyncBytesAtMs: Long? = null
+
+    @Volatile private var transferStartedAtMs: Long? = null
+    @Volatile private var transferResumedAtMs: Long? = null
+    @Volatile private var lastTransferBytesAtMs: Long? = null
+    private val transferFilesDone = java.util.concurrent.atomic.AtomicInteger(0)
+
+    @Volatile
+    private var caughtUpAtMs: Long? = null
+
+    @Volatile
+    private var lastSyncFailureAtMs: Long? = null
+
+    @Volatile
+    private var lastSyncFailure: String? = null
+
+    private val filesSynced = java.util.concurrent.atomic.AtomicInteger(0)
+    private val syncFailuresSinceBytes = java.util.concurrent.atomic.AtomicInteger(0)
 
     /** Whether the last finished probe reached the camera; probes overlap, so connect/disconnect is logged off this. */
     private val cameraUp = java.util.concurrent.atomic.AtomicBoolean(false)
@@ -305,13 +345,20 @@ class BridgeController(context: Context) {
 
     fun refreshStaged() {
         ioScope.launch {
+            // Read the disk before update{}: its lambda re-runs whenever the state
+            // changes underneath it. Transfer progress changes the state many times
+            // a second, so a scan of a large backlog inside it never finished and
+            // kept restarting, using several CPU cores for the whole upload.
             val files = offload.pendingFiles(stagingDir)
+            val phoneBytes = files.sumOf { file -> file.length() }
+            val phoneFreeBytes = stagingDir.usableSpace
+            val stagedClips = StagedClipScanner.scan(stagingDir)
             _state.update {
                 it.copy(
                     phoneFiles = files.size,
-                    phoneBytes = files.sumOf { file -> file.length() },
-                    phoneFreeBytes = stagingDir.usableSpace,
-                    stagedClips = StagedClipScanner.scan(stagingDir),
+                    phoneBytes = phoneBytes,
+                    phoneFreeBytes = phoneFreeBytes,
+                    stagedClips = stagedClips,
                 )
             }
             pushWidget()
@@ -327,6 +374,7 @@ class BridgeController(context: Context) {
                 files = state.phoneFiles,
                 bytes = state.phoneBytes,
                 phase = state.phase,
+                paused = state.paused,
                 cameraOnline = state.cameraReachable,
                 homelabOnline = state.serverReachable,
             )
@@ -1124,13 +1172,14 @@ class BridgeController(context: Context) {
         val job = sessionJob ?: return
         stopRequested = true
         if (pauseAutomatic) {
-            val net = sessionNet
             when (_state.value.phase) {
                 BridgePhase.Syncing -> {
+                    val net = sessionNet ?: probedCameraNet
                     syncPausedOn = net
                     _state.update { it.copy(autoSyncPaused = net != null) }
                 }
                 BridgePhase.Offloading -> {
+                    val net = sessionNet ?: probedOffloadNet
                     offloadPausedOn = net
                     _state.update { it.copy(autoOffloadPaused = net != null) }
                 }
@@ -1138,16 +1187,53 @@ class BridgeController(context: Context) {
             }
         }
         // Progress callbacks are ignored from here on; show the stop at once.
-        _state.update { it.copy(stopping = true, progress = null) }
+        _state.update { it.copy(stopping = true, paused = false, progress = null) }
         job.cancel(CancellationException("Stopped by user"))
         ioScope.launch {
-            val deadline = System.currentTimeMillis() + STOP_ABORT_WINDOW_MS
-            while (job.isActive && System.currentTimeMillis() < deadline) {
-                networks.cancelActive()
-                delay(STOP_ABORT_INTERVAL_MS)
-            }
+            abortUntilUnwound(
+                job = job,
+                windowMs = STOP_ABORT_WINDOW_MS,
+                intervalMs = STOP_ABORT_INTERVAL_MS,
+                ioDone = transferIoDone::get,
+                abort = networks::cancelActive,
+            )
         }
     }
+
+    /**
+     * Holds the running transfer where it is. Unlike Stop it ends nothing: an
+     * upload keeps its connection and carries on from the same byte, a download
+     * keeps its partial file. It stays paused until Resume or Stop, and the
+     * session keeps the transfer lock, so the watcher cannot start another.
+     */
+    fun pauseTransfer() {
+        if (sessionJob == null || stopRequested || !transferGate.pause()) return
+        releaseQuietly(transferWakeLock)
+        _state.update { it.copy(paused = true) }
+        log("${sessionNoun()} paused", kind = sessionKind())
+        ioScope.launch { pushWidget() }
+    }
+
+    fun resumeTransfer() {
+        if (sessionJob == null || stopRequested || !transferGate.isPaused) return
+        val net = sessionNet
+        if (net != null && !networks.isConnected(net)) {
+            log("${sessionNoun()} connection ended while paused; the rest stay queued", kind = sessionKind())
+            stopTransfer(pauseAutomatic = false)
+            return
+        }
+        transferWakeLock = acquireTransferWakeLock()
+        transferResumedAtMs = System.currentTimeMillis()
+        transferGate.resume()
+        _state.update { it.copy(paused = false) }
+        log("${sessionNoun()} resumed", kind = sessionKind())
+        ioScope.launch { pushWidget() }
+    }
+
+    private fun sessionNoun(): String = if (_state.value.phase == BridgePhase.Syncing) "Sync" else "Offload"
+
+    private fun sessionKind(): ActivityKind =
+        if (_state.value.phase == BridgePhase.Syncing) ActivityKind.Sync else ActivityKind.Offload
 
     fun syncNow(scope: CoroutineScope, onComplete: () -> Unit = {}): Job = scope.launch(Dispatchers.IO) {
         try {
@@ -1209,11 +1295,13 @@ class BridgeController(context: Context) {
             // A new connection reads the status (and checks the clock) first.
             statusReadAtMs = 0L
         }
+        probedCameraNet = cameraNet
         noteSilentCamera(cfg, cameraNet != null)
         val allowlist = cfg.offloadWifiAllowlist
         val serverNet = probeNetwork(NetworkUse.Offload, cfg.destHost, cfg.destPort) {
             offloadAllowed(it, allowlist)
         }
+        probedOffloadNet = serverNet
         // A pause lasts as long as that connection: it ends when Android tears
         // the network down or the camera answers on a new one. A probe that
         // just missed (the camera busy sending files) does not end it.
@@ -1298,6 +1386,7 @@ class BridgeController(context: Context) {
         _state.update { it.copy(cameraDetail = status.model ?: "Z50") }
         val recorder = TransferRecorder("Sync")
         val queued = java.util.concurrent.atomic.AtomicBoolean(false)
+        val bytesSeen = java.util.concurrent.atomic.AtomicLong(0)
         val throttle = ProgressThrottle()
         val cameraSample = {
             parseCameraSample(
@@ -1323,16 +1412,29 @@ class BridgeController(context: Context) {
                 client = client,
                 settings = cfg,
                 onProgress = { progress ->
+                    if (progress.overallCopied > bytesSeen.getAndSet(progress.overallCopied)) {
+                        lastSyncBytesAtMs = System.currentTimeMillis()
+                        lastTransferBytesAtMs = lastSyncBytesAtMs
+                        syncFailuresSinceBytes.set(0)
+                    }
                     if (!stopRequested && throttle.shouldPublish(progress.filename, progress.copied, progress.total)) {
                         _state.update { it.copy(progress = progress, phase = BridgePhase.Syncing) }
                     }
                 },
                 onLog = { message -> log(message, kind = ActivityKind.Sync) },
-                onError = { message -> log(message, error = true, toast = false) },
+                onError = { message ->
+                    noteSyncFailure(message)
+                    log(message, error = true, toast = false)
+                },
                 onIssue = { AppToasts.show(app, it) },
                 recorder = recorder,
                 streams = { (liveSettings ?: cfg).parallelDownloads },
                 onFileDone = onFileDone,
+                onFileSaved = { size ->
+                    _state.update { it.copy(phoneFiles = it.phoneFiles + 1, phoneBytes = it.phoneBytes + size) }
+                },
+                gate = transferGate,
+                onWorkersDone = { transferIoDone.set(true) },
                 onQueued = {
                     queued.set(true)
                     idleNote = null
@@ -1341,6 +1443,7 @@ class BridgeController(context: Context) {
                 },
                 // The same "nothing new" every 30 s would bury everything else.
                 onIdle = { message ->
+                    caughtUpAtMs = System.currentTimeMillis()
                     if (userInitiated || message != idleNote) log(message)
                     idleNote = message
                 },
@@ -1368,11 +1471,14 @@ class BridgeController(context: Context) {
             return@withSession 0
         }
         log("Offloading to server via ${networks.describe(net)}")
+        var previousCopied = 0L
         val count = offload.run(
             staging = stagingDir,
             settings = cfg,
             httpClient = networks.httpClient(net),
             onProgress = { progress ->
+                if (progress.overallCopied > previousCopied) lastTransferBytesAtMs = System.currentTimeMillis()
+                previousCopied = progress.overallCopied
                 if (!stopRequested) _state.update { it.copy(progress = progress, phase = BridgePhase.Offloading) }
             },
             onLog = { message -> log(message) },
@@ -1380,6 +1486,13 @@ class BridgeController(context: Context) {
             onIssue = { AppToasts.show(app, it) },
             streams = { (liveSettings ?: cfg).parallelUploads },
             onFileDone = onFileDone,
+            onFileRemoved = { size ->
+                _state.update { it.copy(
+                    phoneFiles = (it.phoneFiles - 1).coerceAtLeast(0),
+                    phoneBytes = (it.phoneBytes - size).coerceAtLeast(0),
+                ) }
+            },
+            gate = transferGate,
         )
         if (count > 0) log("Offloaded $count files to server")
         count
@@ -1408,20 +1521,26 @@ class BridgeController(context: Context) {
         val syncing = phase == BridgePhase.Syncing
         val noun = if (syncing) "Sync" else "Offload"
         val startedMs = System.currentTimeMillis()
-        val done = java.util.concurrent.atomic.AtomicInteger(0)
+        transferFilesDone.set(0)
+        val done = transferFilesDone
         val onFileDone = {
             val now = System.currentTimeMillis()
             val files = done.incrementAndGet()
+            if (syncing) filesSynced.incrementAndGet()
             writeSessionMarker(noun, startedMs, files)
             val label = formatTransferStamp(now)
             if (syncing) stamps.markSync(now) else stamps.markOffload(now)
             _state.update { if (syncing) it.copy(lastSync = label) else it.copy(lastOffload = label) }
         }
         stopRequested = false
+        transferGate = TransferGate()
+        transferIoDone.set(false)
         writeSessionMarker(noun, startedMs, 0)
-        val wakeLock = acquireTransferWakeLock()
-        _state.update { it.copy(phase = phase) }
-        pushWidget()
+        transferWakeLock = acquireTransferWakeLock()
+        transferStartedAtMs = startedMs
+        transferResumedAtMs = null
+        lastTransferBytesAtMs = null
+        if (syncing) syncStartedAtMs = startedMs
         try {
             // The transfer runs as its own child job, so Stop cancels only the
             // transfer. Cancelling the caller's job instead killed the watcher
@@ -1429,6 +1548,10 @@ class BridgeController(context: Context) {
             val count = coroutineScope {
                 val session = async { block(onFileDone) }
                 sessionJob = session
+                // Only now: the Stop and Pause buttons appear with this, and they
+                // need sessionJob, or an early tap would silently do nothing.
+                _state.update { it.copy(phase = phase) }
+                pushWidget()
                 session.await()
             }
             if (count > 0) {
@@ -1458,9 +1581,13 @@ class BridgeController(context: Context) {
             if (currentCoroutineContext().isActive) return done.get()
             throw exc
         } catch (exc: Exception) {
-            log(exc.message ?: "${phase.name.lowercase(Locale.getDefault())} failed", error = true, toast = userInitiated)
+            val message = exc.message ?: "${phase.name.lowercase(Locale.getDefault())} failed"
+            if (syncing) noteSyncFailure(message)
+            log(message, error = true, toast = userInitiated)
             return 0
         } finally {
+            if (syncing) syncStartedAtMs = null
+            transferStartedAtMs = null
             sessionMarker.delete()
             sessionJob = null
             sessionNet = null
@@ -1469,12 +1596,51 @@ class BridgeController(context: Context) {
                 it.copy(
                     progress = null,
                     stopping = false,
+                    paused = false,
                     phase = if (it.watching) BridgePhase.Watching else BridgePhase.Idle,
                 )
             }
-            releaseQuietly(wakeLock)
+            releaseQuietly(transferWakeLock)
+            transferWakeLock = null
             mutex.unlock()
         }
+    }
+
+    private fun noteSyncFailure(message: String) {
+        lastSyncFailure = message
+        lastSyncFailureAtMs = System.currentTimeMillis()
+        syncFailuresSinceBytes.incrementAndGet()
+    }
+
+    /** What the car alerts need; read every few seconds while Android Auto is connected. */
+    fun carSignals(ui: BridgeUiState = _state.value): SyncSignals {
+        val progress = ui.progress?.takeIf { ui.phase == BridgePhase.Syncing }
+        val syncNet = sessionNet?.takeIf { syncStartedAtMs != null }
+        return SyncSignals(
+            nowMs = System.currentTimeMillis(),
+            watching = ui.watching,
+            syncPaused = ui.autoSyncPaused,
+            cameraReachable = ui.cameraReachable,
+            cameraSilent = cameraSilentLogged,
+            syncStartedAtMs = syncStartedAtMs,
+            lastBytesAtMs = lastSyncBytesAtMs,
+            bytesPerSecond = progress?.bytesPerSecond ?: 0,
+            filesWaiting = progress?.let { (it.totalFiles - it.fileIndex + 1).coerceAtLeast(0) },
+            filesSynced = filesSynced.get(),
+            failuresSinceBytes = syncFailuresSinceBytes.get(),
+            lastFailureAtMs = lastSyncFailureAtMs,
+            lastFailure = lastSyncFailure,
+            caughtUpAtMs = caughtUpAtMs,
+            signalDbm = syncNet?.let { wifiLinks.read(it).rssiDbm },
+            phase = ui.phase,
+            paused = ui.paused,
+            stopping = ui.stopping,
+            offloadStopped = ui.autoOffloadPaused,
+            transferStartedAtMs = transferStartedAtMs,
+            transferResumedAtMs = transferResumedAtMs,
+            lastTransferBytesAtMs = lastTransferBytesAtMs,
+            transferFilesDone = transferFilesDone.get(),
+        )
     }
 
     /**
